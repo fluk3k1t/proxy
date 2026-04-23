@@ -6,7 +6,10 @@ edition = "2024"
 [dependencies]
 dns-lookup = "3.0.1"
 httparse = "1.10.1"
+rcgen = { version = "0.14.7", features = ["crypto", "pem", "x509-parser"] }
 reqwest = "0.13.2"
+rustls = "0.23.39"
+rustls-cert-gen = "0.2.0"
 tls-parser = "0.12.2"
 tokio = { version = "1", features = ["full"] }
 tokio-macros = { version = "0.2.0-alpha.6" }
