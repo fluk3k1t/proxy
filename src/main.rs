@@ -40,53 +40,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub struct RawResponse {
-    resp: Response,
-}
-
-impl From<Response> for RawResponse {
-    fn from(value: Response) -> Self {
-        Self { resp: value }
-    }
-}
-
-#[async_trait]
-impl AsyncFrom<RawResponse> for Bytes {
-    async fn async_from(raw: RawResponse) -> Self {
-        let status = raw.resp.status();
-        let headers = raw.resp.headers().clone();
-        let body = raw.resp.text().await.unwrap();
-
-        let mut presp = format!("HTTP/1.1 {}\n", status);
-        for (n, v) in headers.iter() {
-            let v = String::from_utf8_lossy(v.as_bytes());
-            presp.push_str(&format!("{}: {}\r\n", n, v));
-        }
-        presp.push_str("\r\n");
-
-        if headers.iter().any(|(h, v)| h == "Transfer-Encoding") {
-            presp.push_str(&format!("{:x}\r\n{}", body.len(), body));
-        } else {
-            presp.push_str(body.as_str());
-        }
-
-        Bytes::from(presp)
-    }
-}
-
 pub struct Connection {
-    // stream: BufWriter<TcpStream>,
     stream: TcpStream,
-    // buffer: BytesM
-    buffer: BytesMut,
 }
 
 impl Connection {
     pub fn new(stream: TcpStream) -> Self {
-        Connection {
-            stream,
-            buffer: BytesMut::new(),
-        }
+        Connection { stream }
     }
 
     async fn handle_connection(&mut self) -> Result<(), Error> {
@@ -107,15 +67,15 @@ impl Connection {
 
     async fn handle_packet(&mut self, packet: Packet) {
         if let Some(method) = packet.method {
-            let host = packet.headers.get("Host").unwrap();
+            // let host = packet.headers.get("host").unwrap();
+            // println!("{} {:?}", method, packet.headers);
 
             match &method[..] {
                 "GET" => {
-                    let resp = reqwest::get(format!("http://{}", host)).await.unwrap();
-                    let resp: RawResponse = resp.into();
-                    let raw_packet: Bytes = resp.async_into().await;
+                    let response = reqwest::get(packet.path.unwrap()).await.unwrap();
+                    let bytes = response_to_bytes(response).await.unwrap();
 
-                    self.stream.write_all(&raw_packet).await.unwrap();
+                    self.stream.write_all(&bytes).await.unwrap();
                 }
                 "CONNECT" => {}
                 _ => {}
@@ -126,10 +86,32 @@ impl Connection {
     }
 }
 
+async fn response_to_bytes(resp: reqwest::Response) -> Result<Bytes, reqwest::Error> {
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = resp.text().await.unwrap();
+
+    let mut presp = format!("HTTP/1.1 {}\r\n", status);
+    for (n, v) in headers.iter() {
+        let v = String::from_utf8_lossy(v.as_bytes());
+        presp.push_str(&format!("{}: {}\r\n", n, v));
+    }
+    presp.push_str("\r\n");
+
+    if headers.iter().any(|(h, v)| h == "transfer-encoding") {
+        presp.push_str(&format!("{:x}\r\n{}", body.len(), body));
+    } else {
+        presp.push_str(body.as_str());
+    }
+
+    Ok(Bytes::from(presp))
+}
+
 #[derive(Debug)]
 pub struct Packet {
     headers: HashMap<String, String>,
     method: Option<String>,
+    path: Option<String>,
 }
 
 pub struct HttpDecoder {}
@@ -151,6 +133,8 @@ impl Decoder for HttpDecoder {
             let mut headers = [EMPTY_HEADER; 64];
             let mut req = Request::new(&mut headers);
 
+            // println!("{:?}", String::from_utf8_lossy(src));
+
             match req
                 .parse(src)
                 .map_err(|_| std::io::Error::new(ErrorKind::Other, "oh no!"))?
@@ -162,17 +146,22 @@ impl Decoder for HttpDecoder {
                         .iter()
                         .map(|h| {
                             (
-                                h.name.to_owned(),
+                                h.name.to_owned().to_lowercase(),
                                 String::from_utf8_lossy(h.value).to_string(),
                             )
                         })
                         .collect();
 
                     let method = req.method.map(String::from);
+                    let path = req.path.map(String::from);
 
                     src.clear();
 
-                    Ok(Some(Packet { headers, method }))
+                    Ok(Some(Packet {
+                        headers,
+                        method,
+                        path,
+                    }))
                 }
             }
         } else {
