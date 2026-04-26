@@ -19,12 +19,12 @@ use reqwest::{Identity, Response};
 use rustls_platform_verifier::{BuilderVerifierExt, Verifier};
 // use rustls_pki_types::ServerName;
 // use std::sync::Arc;
-use tokio::net::TcpStream;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter},
+    io::{self, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter},
     net::TcpListener,
     time::{error::Elapsed, timeout},
 };
+use tokio::{net::TcpStream, sync::Mutex};
 use tokio_rustls::{
     Connect, TlsAcceptor,
     client::TlsStream,
@@ -48,7 +48,7 @@ impl Connection {
         Connection { stream }
     }
 
-    pub async fn handle_connection(&mut self) -> Result<(), Error> {
+    pub async fn handle_connection(mut self) -> Result<(), Error> {
         let mut packet_reader = Framed::new(&mut self.stream, HttpDecoder::default());
 
         while let Some(r) = packet_reader.next().await {
@@ -64,7 +64,7 @@ impl Connection {
         Ok(())
     }
 
-    async fn handle_packet(&mut self, packet: Packet) {
+    async fn handle_packet(mut self, packet: Packet) {
         if let Some(method) = packet.method {
             let host = packet.headers.get("host").unwrap();
 
@@ -76,7 +76,65 @@ impl Connection {
                     self.stream.write_all(&bytes).await.unwrap();
                 }
                 "CONNECT" => {
+                    println!("{:?}", packet.headers);
+                    println!("{:?}", packet.path);
+
                     let mut upstream = self.connect_tls(host).await.unwrap();
+
+                    let certs = CertificateDer::pem_file_iter("ore_ca.cert")
+                        .unwrap()
+                        .map(|cert| cert.unwrap())
+                        .collect();
+
+                    let private_key = PrivateKeyDer::from_pem_file("ore_ca.key").unwrap();
+                    let config = ServerConfig::builder()
+                        .with_no_client_auth()
+                        .with_single_cert(certs, private_key)
+                        .unwrap();
+
+                    let accepter = TlsAcceptor::from(Arc::new(config));
+
+                    let connect_accept = "HTTP/1.1 200 Connection Established\r\n\r\n";
+                    self.stream
+                        .write_all(connect_accept.as_bytes())
+                        .await
+                        .unwrap();
+
+                    match accepter.accept(self.stream).await {
+                        Ok(tls_stream) => {
+                            let (mut down_r, mut down_w) = tokio::io::split(tls_stream);
+                            let (mut up_r, mut up_w) = tokio::io::split(upstream);
+
+                            let to_upstream = tokio::spawn(async move {
+                                let mut buf = BytesMut::new();
+                                while let Ok(n) = down_r.read_buf(&mut buf).await {
+                                    if !buf.is_empty() {
+                                        println!("{}, {:?}", n, String::from_utf8_lossy(&buf));
+                                        up_w.write_all_buf(&mut buf).await.unwrap();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            });
+
+                            let to_downstream = tokio::spawn(async move {
+                                let mut buf = BytesMut::new();
+                                while let Ok(n) = up_r.read_buf(&mut buf).await {
+                                    if !buf.is_empty() {
+                                        down_w.write_all_buf(&mut buf).await.unwrap();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            });
+
+                            tokio::select! {
+                                _ = to_upstream => {println!("connection closed");},
+                                _ = to_downstream => {println!("connection closed");},
+                            }
+                        }
+                        Err(e) => {}
+                    }
                 }
                 _ => {}
             }
@@ -133,3 +191,25 @@ async fn response_to_bytes(resp: reqwest::Response) -> Result<Bytes, reqwest::Er
 
     Ok(Bytes::from(presp))
 }
+
+#[derive(Debug)]
+pub struct TlsMiddleWare<T> {
+    stream: TlsStream<T>,
+}
+
+// impl Reader
+impl<T> AsyncRead for TlsMiddleWare<T> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        todo!()
+    }
+}
+
+// impl<T> From<TlsStream<T>> for TlsMiddleWare<T> {
+//     fn from(stream: TlsStream<T>) -> Self {
+//         Self { stream }
+//     }
+// }
