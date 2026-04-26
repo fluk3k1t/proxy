@@ -4,13 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bytes = "1.11.1"
-dns-lookup = "3.0.1"
-httparse = "1.10.1"
-rcgen = { version = "0.14.7", features = ["crypto", "pem", "x509-parser"] }
-reqwest = "0.13.2"
-rustls = "0.23.39"
-rustls-cert-gen = "0.2.0"
-tls-parser = "0.12.2"
 tokio = { version = "1", features = ["full"] }
-tokio-macros = { version = "0.2.0-alpha.6" }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+bytes = "1"
+httparse = "1"
+
+futures-util = "0.3.31"
+
+rcgen = { version = "0.14", features = ["crypto", "pem", "x509-parser"] }
+
+dns-lookup = "3"
+tls-parser = "0.12"
+tokio-stream = "0.1.18"
+reqwest = "0.13.2"
+async_from = "0.2.0"
