@@ -81,16 +81,45 @@ impl Connection {
 
                     let mut upstream = self.connect_tls(host).await.unwrap();
 
-                    let certs = CertificateDer::pem_file_iter("ore_ca.cert")
-                        .unwrap()
-                        .map(|cert| cert.unwrap())
-                        .collect();
+                    // let certs = CertificateDer::pem_file_iter("ore_ca.cert")
+                    //     .unwrap()
+                    //     .map(|cert| cert.unwrap())
+                    //     .collect();
 
-                    let private_key = PrivateKeyDer::from_pem_file("ore_ca.key").unwrap();
-                    let config = ServerConfig::builder()
-                        .with_no_client_auth()
-                        .with_single_cert(certs, private_key)
+                    // let private_key = PrivateKeyDer::from_pem_file("ore_ca.key").unwrap();
+                    let client_key_pair = KeyPair::generate().unwrap();
+                    // client_key_pair.
+                    let (domain, port) = {
+                        let mut splitted = host.split(":");
+                        (
+                            splitted.next().unwrap().to_string(),
+                            splitted.next().unwrap_or("443").parse::<u16>().unwrap(),
+                        )
+                    };  
+
+                    let client_cert_param = CertificateParams::new(vec![domain.to_string()]).unwrap();
+
+                    let ca_pem_str = fs::read_to_string("ore_ca.cert").unwrap();
+                    let ca_signing_key = fs::read_to_string("ore_ca.key").unwrap();
+
+                    let ca_issuer =
+                        Issuer::from_ca_cert_pem(&ca_pem_str, KeyPair::from_pem(&ca_signing_key).unwrap()).unwrap();
+                    // println!("{:?}", ca_issuer);
+
+                    let cert = client_cert_param
+                        .signed_by(&client_key_pair, &ca_issuer)
                         .unwrap();
+
+                    let certs = CertificateDer::from_pem_slice(cert.pem().as_bytes()).unwrap();
+
+
+                    let mut config = ServerConfig::builder()
+                        .with_no_client_auth()
+                        .with_single_cert(vec![certs], PrivateKeyDer::from_pem_slice(client_key_pair.serialize_pem().as_bytes()).unwrap())
+                        .unwrap();
+
+
+                    config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
                     let accepter = TlsAcceptor::from(Arc::new(config));
 
@@ -153,12 +182,14 @@ impl Connection {
         };
 
         let arc_crypto_provider = Arc::new(default_provider());
-        let config = ClientConfig::builder_with_provider(arc_crypto_provider)
+        let mut config = ClientConfig::builder_with_provider(arc_crypto_provider)
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_platform_verifier()
             .unwrap()
             .with_no_client_auth();
+
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
         let connector = TlsConnector::from(Arc::new(config));
         let client = TcpStream::connect((domain.clone(), port)).await.unwrap();

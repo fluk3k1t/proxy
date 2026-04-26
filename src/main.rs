@@ -38,7 +38,7 @@ use tokio_util::codec::{Decoder, Framed, FramedRead};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut listener = TcpListener::bind("127.0.0.1:8000").await?;
+    let mut listener = TcpListener::bind("0.0.0.0:8080").await?;
 
     loop {
         match listener.accept().await {
